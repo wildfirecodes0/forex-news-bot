@@ -21,9 +21,9 @@ def admin_keyboard():
     builder.adjust(1)
     return builder.as_markup()
 
-@admin_router.message(Command("admin"), F.from_user.id == ADMIN_ID)
+@admin_router.message(Command("algo-admin-rr"), F.from_user.id == ADMIN_ID)
 async def admin_panel(message: Message):
-    await message.answer("🛠 <b>Admin Panel</b>", reply_markup=admin_keyboard())
+    await message.answer("🛠 <b>Advanced Admin Panel</b>", reply_markup=admin_keyboard())
 
 @admin_router.callback_query(F.data == "admin_stats", F.from_user.id == ADMIN_ID)
 async def show_stats(callback: CallbackQuery):
