@@ -1,17 +1,16 @@
-import requests
+from curl_cffi import requests
 from bs4 import BeautifulSoup
 import re
 from datetime import datetime
 import pytz
 
 def clean_title(title: str) -> str:
-    """Removes standard suffixes like q/q, y/y, m/m, q1, m1 from titles."""
     return re.sub(r'(?i)\s*(q/q|y/y|m/m|q[1-4]|m[1-9]).*$', '', title).strip()
 
 def get_event_type(title: str) -> str:
     t = title.lower()
     if any(x in t for x in["gdp", "pmi", "production", "growth", "manufacturing", "services", "trade"]): return "Growth"
-    if any(x in t for x in ["cpi", "ppi", "pce", "inflation", "price", "wage"]): return "Inflation"
+    if any(x in t for x in["cpi", "ppi", "pce", "inflation", "price", "wage"]): return "Inflation"
     if any(x in t for x in["employment", "unemployment", "jobless", "payrolls", "nfp", "jolt", "claims"]): return "Employment"
     if any(x in t for x in["rate", "central bank", "fed", "ecb", "boe", "boj", "rba", "statement", "minutes"]): return "Central Bank"
     if any(x in t for x in["bond", "auction", "note", "bill"]): return "Bonds"
@@ -26,18 +25,16 @@ def fetch_forex_events():
         "https://nfs.faireconomy.media/ff_calendar_thisweek.xml",
         "https://nfs.faireconomy.media/ff_calendar_nextweek.xml"
     ]
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     
     events =[]
     eastern = pytz.timezone('US/Eastern')
     ist = pytz.timezone('Asia/Kolkata')
     
-    # Mapped 'Holiday' to 'None' so it shows up for people who want standard calendar updates
     impact_map = {"High": "High", "Medium": "Medium", "Low": "Low", "Non": "None", "Holiday": "None"}
     
     for url in urls:
         try:
-            response = requests.get(url, headers=headers, timeout=15)
+            response = requests.get(url, impersonate="chrome", timeout=15)
             if response.status_code != 200: continue
             
             soup = BeautifulSoup(response.content, 'xml')
