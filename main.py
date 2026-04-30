@@ -1,9 +1,9 @@
 import os
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
-from aiogram import Bot, Dispatcher, F, Router
-from aiogram.types import Message, CallbackQuery
+from aiogram import Bot, Dispatcher, F, Router, BaseMiddleware
+from aiogram.types import Message, CallbackQuery, TelegramObject
 from aiogram.filters import CommandStart
 from aiogram.client.default import DefaultBotProperties
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -11,147 +11,180 @@ from dotenv import load_dotenv
 
 from database import get_user, update_user_filter, get_all_users
 from scraper import fetch_forex_events
-from keyboards import main_menu, settings_keyboard, SettingsCB
+from keyboards import (main_inline_menu, settings_keyboard, pagination_keyboard, 
+                       MainMenuCB, SettingsCB, PaginationCB, force_join_keyboard)
+from admin import admin_router
 
 load_dotenv()
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME") # e.g., @YourChannelUsername
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
 router = Router()
 
-# In-memory cache for events to avoid spamming the API every minute
 EVENTS_CACHE =[]
-ALERTED_EVENTS = set() # Keeps track of dispatched alerts
+ALERTED_EVENTS = set()
 
-IMPACT_EMOJIS = {"High": "🔴", "Medium": "🟠", "Low": "🟡", "None": "⚪"}
+# --- FORCE JOIN MIDDLEWARE ---
+class ForceJoinMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event: TelegramObject, data: dict):
+        # Allow checking if event is message or callback
+        user = data.get("event_from_user")
+        if not user: return await handler(event, data)
+        
+        try:
+            member = await bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=user.id)
+            if member.status in ['left', 'kicked', 'restricted']:
+                msg = "🛑 <b>Action Required!</b>\n\nYou must join our official channel to use Algo Forex News Bot."
+                if isinstance(event, Message):
+                    await event.answer(msg, reply_markup=force_join_keyboard())
+                elif isinstance(event, CallbackQuery) and event.data != "check_sub":
+                    await event.message.answer(msg, reply_markup=force_join_keyboard())
+                    await event.answer()
+                return # Stop propagation
+        except Exception as e:
+            print(f"Middleware Error: {e}")
+            
+        return await handler(event, data)
 
+dp.message.middleware(ForceJoinMiddleware())
+dp.callback_query.middleware(ForceJoinMiddleware())
+
+# --- HELPER FUNCTIONS ---
 def format_event_msg(event: dict) -> str:
-    """Formats event data cleanly using Monospace layout."""
-    emj = IMPACT_EMOJIS.get(event["impact"], "⚪")
+    emojis = {"High": "🔴", "Medium": "🟠", "Low": "🟡", "None": "⚪"}
+    emj = emojis.get(event["impact"], "⚪")
     return (
         f"<b>{event['title']}</b>\n"
-        f"<code>-------------------------</code>\n"
-        f"💵 <b>Currency:</b> <code>{event['currency']}</code>\n"
-        f"📊 <b>Impact:</b>   {emj} <code>{event['impact']}</code>\n"
-        f"🏷 <b>Type:</b>     <code>{event['event_type']}</code>\n"
-        f"🕒 <b>Time:</b>     <code>{event['time_ist'].strftime('%I:%M %p (IST)')}</code>\n"
-        f"<code>-------------------------</code>"
+        f"💵 <b>Currency:</b> <code>{event['currency']}</code> | 📊 <b>Impact:</b> {emj} <code>{event['impact']}</code>\n"
+        f"🕒 <b>Time:</b> <code>{event['time_ist'].strftime('%d %b, %I:%M %p')}</code>\n"
+        f"<code>───────────────</code>"
     )
 
+def get_paginated_events(user_id: int, period: str, page: int = 0):
+    user = get_user(user_id)
+    ist = pytz.timezone('Asia/Kolkata')
+    now = datetime.now(ist)
+    
+    # Period logic
+    end_date = now
+    if period == "today": end_date = now.replace(hour=23, minute=59)
+    elif period == "week": end_date = now + timedelta(days=7)
+    elif period == "month": end_date = now + timedelta(days=30)
+
+    filtered =[]
+    for e in EVENTS_CACHE:
+        if not user["impact"].get(e["impact"], False): continue
+        if not user["currencies"].get(e["currency"], False): continue
+        if not user["event_types"].get(e["event_type"], False): continue
+        
+        if e["time_ist"] < now: continue
+        if e["time_ist"] > end_date: continue
+        filtered.append(e)
+
+    # Chunk into pages of 5
+    items_per_page = 5
+    total_pages = max(1, (len(filtered) + items_per_page - 1) // items_per_page)
+    chunk = filtered[page * items_per_page : (page + 1) * items_per_page]
+    
+    return chunk, total_pages, len(filtered)
+
+# --- HANDLERS ---
 @router.message(CommandStart())
 async def cmd_start(message: Message):
     get_user(message.from_user.id)
     await message.answer(
-        "👋 <b>Welcome to the Premium Forex Alerts Bot!</b>\n\n"
-        "Configure your filters in the <b>⚙️ Settings</b> to receive personalized 30-minute advance notifications.",
-        reply_markup=main_menu()
+        "🤖 <b>Algo Forex News Bot</b>\n\n"
+        "Your premium assistant for tracking Forex Markets. Select an option below:",
+        reply_markup=main_inline_menu()
     )
 
-@router.message(F.text == "⚙️ Settings")
-async def show_settings(message: Message):
-    await message.answer(
-        "🎛 <b>Your Personalized Alerts Dashboard</b>\n"
-        "<i>Tap a button to toggle (✅ ON / ❌ OFF)</i>",
-        reply_markup=settings_keyboard(message.from_user.id)
-    )
+@router.callback_query(F.data == "check_sub")
+async def check_subscription(callback: CallbackQuery):
+    await callback.message.delete()
+    await callback.message.answer("Thank you for joining! You can now use the bot.", reply_markup=main_inline_menu())
+
+@router.callback_query(MainMenuCB.filter())
+async def handle_main_menu(callback: CallbackQuery, callback_data: MainMenuCB):
+    if callback_data.action == "settings":
+        await callback.message.edit_text("🎛 <b>Filter Settings</b>\nToggle what news you want to receive:", reply_markup=settings_keyboard(callback.from_user.id))
+    elif callback_data.action == "back_main":
+        await callback.message.edit_text("🤖 <b>Algo Forex News Bot</b>\nSelect an option below:", reply_markup=main_inline_menu())
+    else:
+        # Handling today, week, month
+        chunk, total_pages, total_items = get_paginated_events(callback.from_user.id, callback_data.action, 0)
+        
+        if total_items == 0:
+            await callback.answer("No events match your filters.", show_alert=True)
+            return
+            
+        text = f"📰 <b>Events ({callback_data.action.capitalize()})</b> - Page 1/{total_pages}\n\n"
+        text += "\n".join([format_event_msg(e) for e in chunk])
+        
+        await callback.message.edit_text(text, reply_markup=pagination_keyboard(0, total_pages, callback_data.action))
+
+@router.callback_query(PaginationCB.filter())
+async def handle_pagination(callback: CallbackQuery, callback_data: PaginationCB):
+    if callback_data.action == "close":
+        await callback.message.delete()
+        return
+
+    chunk, total_pages, _ = get_paginated_events(callback.from_user.id, callback_data.period, callback_data.page)
+    text = f"📰 <b>Events ({callback_data.period.capitalize()})</b> - Page {callback_data.page + 1}/{total_pages}\n\n"
+    text += "\n".join([format_event_msg(e) for e in chunk])
+    
+    await callback.message.edit_text(text, reply_markup=pagination_keyboard(callback_data.page, total_pages, callback_data.period))
 
 @router.callback_query(SettingsCB.filter())
 async def toggle_setting(callback: CallbackQuery, callback_data: SettingsCB):
     user = get_user(callback.from_user.id)
     current_val = user[callback_data.category].get(callback_data.item, False)
-    
-    # Update Supabase Database
     update_user_filter(callback.from_user.id, callback_data.category, callback_data.item, current_val)
-    
-    # Dynamically update the inline keyboard UI
     await callback.message.edit_reply_markup(reply_markup=settings_keyboard(callback.from_user.id))
-    await callback.answer(f"Toggled {callback_data.item}")
 
-@router.message(F.text.in_({"📅 Today", "🗓 This Week"}))
-async def show_schedule(message: Message):
-    user = get_user(message.from_user.id)
-    ist = pytz.timezone('Asia/Calcutta')
-    now = datetime.now(ist)
-    
-    filtered =[]
-    for e in EVENTS_CACHE:
-        # Check User Filters
-        if not user["impact"].get(e["impact"], False): continue
-        if not user["currencies"].get(e["currency"], False): continue
-        if not user["event_types"].get(e["event_type"], False): continue
-        if e["time_ist"] < now: continue # Skip past events
-        
-        if message.text == "📅 Today" and e["time_ist"].date() != now.date(): continue
-        
-        filtered.append(e)
-        
-    if not filtered:
-        await message.answer("📭 <i>No upcoming events match your active filters.</i>")
-        return
-        
-    response = "\n\n".join([format_event_msg(e) for e in filtered[:5]])
-    if len(filtered) > 5:
-         response += f"\n\n<i>...and {len(filtered)-5} more.</i>"
-         
-    title = "📅 <b>Today's Events</b>" if message.text == "📅 Today" else "🗓 <b>This Week's Events</b>"
-    await message.answer(f"{title}\n\n{response}")
-
-# --- Background Tasks (APScheduler) ---
-
-def update_events_cache():
-    """Scrapes ForexFactory every 15 mins."""
+# --- ADMIN SCRAPE OVERRIDE ---
+@admin_router.callback_query(F.data == "admin_scrape")
+async def force_scrape(callback: CallbackQuery):
+    await callback.answer("Scraping in background...")
     global EVENTS_CACHE
     EVENTS_CACHE = fetch_forex_events()
-    print(f"[{datetime.now()}] Cache updated. Total events: {len(EVENTS_CACHE)}")
+    await callback.message.answer(f"✅ Scraper refreshed. Buffer holds {len(EVENTS_CACHE)} events.")
+
+# --- BACKGROUND TASKS ---
+def update_events_cache():
+    global EVENTS_CACHE
+    EVENTS_CACHE = fetch_forex_events()
 
 async def dispatch_personalized_alerts():
-    """Runs every minute to check for events exactly 30 mins away."""
     if not EVENTS_CACHE: return
-    
-    ist = pytz.timezone('Asia/Calcutta')
+    ist = pytz.timezone('Asia/Kolkata')
     now = datetime.now(ist)
     users = get_all_users()
     
     for event in EVENTS_CACHE:
-        if event["id"] in ALERTED_EVENTS:
-            continue
-            
-        time_diff_minutes = (event["time_ist"] - now).total_seconds() / 60.0
+        if event["id"] in ALERTED_EVENTS: continue
+        time_diff = (event["time_ist"] - now).total_seconds() / 60.0
         
-        # Trigger if the event is 29 to 30 minutes away
-        if 29 <= time_diff_minutes <= 30.5:
+        if 29.5 <= time_diff <= 30.5:
             ALERTED_EVENTS.add(event["id"])
-            msg_text = f"⚠️ <b>UPCOMING EVENT IN 30 MINS</b> ⚠️\n\n{format_event_msg(event)}"
+            msg_text = f"⚠️ <b>ALGO ALERT: 30 MINS TO NEWS</b> ⚠️\n\n{format_event_msg(event)}"
             
-            # Find users whose filters match this specific event
             for u in users:
-                impact_ok = u["impact"].get(event["impact"], False)
-                curr_ok = u["currencies"].get(event["currency"], False)
-                type_ok = u["event_types"].get(event["event_type"], False)
-                
-                if impact_ok and curr_ok and type_ok:
+                if u["impact"].get(event["impact"], False) and u["currencies"].get(event["currency"], False) and u["event_types"].get(event["event_type"], False):
                     try:
                         await bot.send_message(u["user_id"], msg_text)
-                    except Exception as e:
-                        print(f"Failed to alert {u['user_id']}: {e}")
+                    except Exception:
+                        pass
 
 async def main():
-    # Initial Cache population
     update_events_cache()
-    
-    # Scheduler Setup
-    scheduler = AsyncIOScheduler(timezone=pytz.timezone('Asia/Calcutta'))
-    
-    # Update cache every 15 minutes (Reliable retry mechanism handled inside the cron timing)
+    scheduler = AsyncIOScheduler(timezone=pytz.timezone('Asia/Kolkata'))
     scheduler.add_job(update_events_cache, 'interval', minutes=15)
-    
-    # Check for dispatches every 1 minute
     scheduler.add_job(dispatch_personalized_alerts, 'interval', minutes=1)
-    
     scheduler.start()
     
-    # Aiogram startup
+    dp.include_router(admin_router)
     dp.include_router(router)
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
