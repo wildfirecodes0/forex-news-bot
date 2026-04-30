@@ -1,4 +1,3 @@
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.filters.callback_data import CallbackData
 from database import get_user
@@ -31,7 +30,7 @@ def main_inline_menu():
     builder.button(text="🗓 1 Week", callback_data=MainMenuCB(action="week"))
     builder.button(text="📆 1 Month", callback_data=MainMenuCB(action="month"))
     builder.button(text="⚙️ Settings", callback_data=MainMenuCB(action="settings"))
-    builder.adjust(2, 1, 1)
+    builder.adjust(2, 1, 1) # Clean layout
     return builder.as_markup()
 
 def settings_keyboard(user_id: int):
