@@ -1,12 +1,12 @@
 import requests
 from bs4 import BeautifulSoup
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 
 def clean_title(title: str) -> str:
-    """Removes standard suffixes like q/q, y/y, m/m from titles."""
-    return re.sub(r'(?i)\s*(q/q|y/y|m/m|q1|q2|q3|q4).*$', '', title).strip()
+    """Removes standard suffixes like q/q, y/y, m/m, q1, m1 from titles."""
+    return re.sub(r'(?i)\s*(q/q|y/y|m/m|q[1-4]|m[1-9]).*$', '', title).strip()
 
 def get_event_type(title: str) -> str:
     t = title.lower()
@@ -17,29 +17,29 @@ def get_event_type(title: str) -> str:
     if any(x in t for x in["bond", "auction", "note", "bill"]): return "Bonds"
     if any(x in t for x in["housing", "home", "building", "mortgage"]): return "Housing"
     if any(x in t for x in ["consumer", "sentiment", "confidence", "michigan"]): return "Consumer Surveys"
-    if any(x in t for x in ["business", "tankan", "ifo", "zew"]): return "Business Surveys"
-    if any(x in t for x in ["speaks", "speech", "testifies"]): return "Speeches"
+    if any(x in t for x in["business", "tankan", "ifo", "zew"]): return "Business Surveys"
+    if any(x in t for x in["speaks", "speech", "testifies"]): return "Speeches"
     return "Misc"
 
 def fetch_forex_events():
-    """Scrapes fair economy XML feed using BeautifulSoup4 to bypass strict Cloudflare checks."""
     urls =[
         "https://nfs.faireconomy.media/ff_calendar_thisweek.xml",
-        "https://nfs.faireconomy.media/ff_calendar_nextweek.xml" # To simulate up to a month of available data
+        "https://nfs.faireconomy.media/ff_calendar_nextweek.xml"
     ]
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     
     events =[]
     eastern = pytz.timezone('US/Eastern')
     ist = pytz.timezone('Asia/Kolkata')
-    impact_map = {"High": "High", "Medium": "Medium", "Low": "Low", "Non": "None"}
+    
+    # Mapped 'Holiday' to 'None' so it shows up for people who want standard calendar updates
+    impact_map = {"High": "High", "Medium": "Medium", "Low": "Low", "Non": "None", "Holiday": "None"}
     
     for url in urls:
         try:
             response = requests.get(url, headers=headers, timeout=15)
             if response.status_code != 200: continue
             
-            # BeautifulSoup 4 implementation
             soup = BeautifulSoup(response.content, 'xml')
             
             for event in soup.find_all('event'):
@@ -61,7 +61,6 @@ def fetch_forex_events():
                     continue
                     
                 clean_name = clean_title(title)
-                
                 events.append({
                     "id": f"{currency}_{int(dt_ist.timestamp())}_{clean_name[:5]}",
                     "title": clean_name,
@@ -71,8 +70,7 @@ def fetch_forex_events():
                     "time_ist": dt_ist
                 })
         except Exception as e:
-            print(f"BS4 Scrape Error on {url}: {e}")
+            print(f"Scrape Error on {url}: {e}")
             
-    # Remove duplicates
     unique_events = {e["id"]: e for e in events}
     return sorted(list(unique_events.values()), key=lambda x: x["time_ist"])
