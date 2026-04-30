@@ -7,9 +7,10 @@ from aiogram.types import Message, CallbackQuery, TelegramObject
 from aiogram.filters import CommandStart
 from aiogram.client.default import DefaultBotProperties
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from aiohttp import web
 from dotenv import load_dotenv
 
-from database import get_user, update_user_filter, get_all_users
+from database import get_user, update_user_filter, get_all_users, get_user_with_status
 from scraper import fetch_forex_events
 from keyboards import (main_inline_menu, settings_keyboard, pagination_keyboard, 
                        MainMenuCB, SettingsCB, PaginationCB, force_join_keyboard)
@@ -18,7 +19,9 @@ from admin import admin_router
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME") # e.g., @YourChannelUsername
+CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME") 
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
 router = Router()
@@ -26,13 +29,26 @@ router = Router()
 EVENTS_CACHE =[]
 ALERTED_EVENTS = set()
 
-# --- FORCE JOIN MIDDLEWARE ---
+# --- RENDER WEB SERVER (PORT BINDING) ---
+async def health_check(request):
+    return web.Response(text="Bot is running smoothly!", status=200)
+
+async def start_web_server():
+    """Runs a dummy webserver to pass Render.com port scan checks."""
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", 8080))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"Health check server running on port {port}")
+
+# --- MIDDLEWARE ---
 class ForceJoinMiddleware(BaseMiddleware):
     async def __call__(self, handler, event: TelegramObject, data: dict):
-        # Allow checking if event is message or callback
         user = data.get("event_from_user")
         if not user: return await handler(event, data)
-        
         try:
             member = await bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=user.id)
             if member.status in ['left', 'kicked', 'restricted']:
@@ -42,36 +58,31 @@ class ForceJoinMiddleware(BaseMiddleware):
                 elif isinstance(event, CallbackQuery) and event.data != "check_sub":
                     await event.message.answer(msg, reply_markup=force_join_keyboard())
                     await event.answer()
-                return # Stop propagation
+                return 
         except Exception as e:
-            print(f"Middleware Error: {e}")
-            
+            pass
         return await handler(event, data)
 
 dp.message.middleware(ForceJoinMiddleware())
 dp.callback_query.middleware(ForceJoinMiddleware())
 
 # --- HELPER FUNCTIONS ---
-def format_event_msg(event: dict) -> str:
+def format_event_msg(event: dict, now: datetime) -> str:
     emojis = {"High": "🔴", "Medium": "🟠", "Low": "🟡", "None": "⚪"}
     emj = emojis.get(event["impact"], "⚪")
+    status = "✅ <i>Passed</i>" if event["time_ist"] < now else "⏳ <i>Upcoming</i>"
+    
     return (
-        f"<b>{event['title']}</b>\n"
-        f"💵 <b>Currency:</b> <code>{event['currency']}</code> | 📊 <b>Impact:</b> {emj} <code>{event['impact']}</code>\n"
-        f"🕒 <b>Time:</b> <code>{event['time_ist'].strftime('%d %b, %I:%M %p')}</code>\n"
-        f"<code>───────────────</code>"
+        f"📌 <b>{event['title']}</b>\n"
+        f"💱 <b>Currency:</b> <code>{event['currency']}</code> | 💥 <b>Impact:</b> {emj} <code>{event['impact']}</code>\n"
+        f"🕒 <b>Time:</b> <code>{event['time_ist'].strftime('%d %b, %I:%M %p')}</code> | {status}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━"
     )
 
 def get_paginated_events(user_id: int, period: str, page: int = 0):
     user = get_user(user_id)
     ist = pytz.timezone('Asia/Kolkata')
     now = datetime.now(ist)
-    
-    # Period logic
-    end_date = now
-    if period == "today": end_date = now.replace(hour=23, minute=59)
-    elif period == "week": end_date = now + timedelta(days=7)
-    elif period == "month": end_date = now + timedelta(days=30)
 
     filtered =[]
     for e in EVENTS_CACHE:
@@ -79,26 +90,49 @@ def get_paginated_events(user_id: int, period: str, page: int = 0):
         if not user["currencies"].get(e["currency"], False): continue
         if not user["event_types"].get(e["event_type"], False): continue
         
-        if e["time_ist"] < now: continue
-        if e["time_ist"] > end_date: continue
+        # Fixed Filter Logic: Match Calendar Day Exactly, allow viewing past events for today.
+        event_date = e["time_ist"].date()
+        if period == "today":
+            if event_date != now.date(): continue
+        elif period == "week":
+            if event_date < now.date() or event_date > (now.date() + timedelta(days=7)): continue
+        elif period == "month":
+            if event_date < now.date() or event_date > (now.date() + timedelta(days=30)): continue
+
         filtered.append(e)
 
-    # Chunk into pages of 5
     items_per_page = 5
     total_pages = max(1, (len(filtered) + items_per_page - 1) // items_per_page)
     chunk = filtered[page * items_per_page : (page + 1) * items_per_page]
     
-    return chunk, total_pages, len(filtered)
+    return chunk, total_pages, len(filtered), now
 
 # --- HANDLERS ---
 @router.message(CommandStart())
 async def cmd_start(message: Message):
-    get_user(message.from_user.id)
-    await message.answer(
-        "🤖 <b>Algo Forex News Bot</b>\n\n"
-        "Your premium assistant for tracking Forex Markets. Select an option below:",
-        reply_markup=main_inline_menu()
+    user, is_new = get_user_with_status(message.from_user.id)
+    
+    # Notify Admin on new user
+    if is_new and ADMIN_ID != 0:
+        try:
+            await bot.send_message(
+                ADMIN_ID, 
+                f"🚨 <b>New User Joined</b>\n\n👤 Name: {message.from_user.full_name}\n🔗 Username: @{message.from_user.username}\n🆔 ID: <code>{message.from_user.id}</code>"
+            )
+        except Exception:
+            pass
+
+    msg = (
+        "📊 <b>Algo Forex News Bot</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "<i>Your elite AI assistant for high-impact Forex events.</i>\n\n"
+        "✨ <b>Features:</b>\n"
+        "• ⏱ Auto-converts to IST (GMT+5:30).\n"
+        "• 🎯 Custom filters for Currencies & Impact.\n"
+        "• 🔔 Exact 30-minute advance notifications.\n\n"
+        "👇 <b>Select an option to manage your feed:</b>"
     )
+    await message.answer(msg, reply_markup=main_inline_menu())
 
 @router.callback_query(F.data == "check_sub")
 async def check_subscription(callback: CallbackQuery):
@@ -108,19 +142,18 @@ async def check_subscription(callback: CallbackQuery):
 @router.callback_query(MainMenuCB.filter())
 async def handle_main_menu(callback: CallbackQuery, callback_data: MainMenuCB):
     if callback_data.action == "settings":
-        await callback.message.edit_text("🎛 <b>Filter Settings</b>\nToggle what news you want to receive:", reply_markup=settings_keyboard(callback.from_user.id))
+        await callback.message.edit_text("🎛 <b>Filter Settings</b>\nToggle what news you want to receive:", reply_markup=settings_keyboard(callback.fromuser.id))
     elif callback_data.action == "back_main":
-        await callback.message.edit_text("🤖 <b>Algo Forex News Bot</b>\nSelect an option below:", reply_markup=main_inline_menu())
+        await callback.message.edit_text("📊 <b>Algo Forex News Bot</b>\n👇 Select an option to manage your feed:", reply_markup=main_inline_menu())
     else:
-        # Handling today, week, month
-        chunk, total_pages, total_items = get_paginated_events(callback.from_user.id, callback_data.action, 0)
+        chunk, total_pages, total_items, now = get_paginated_events(callback.from_user.id, callback_data.action, 0)
         
         if total_items == 0:
-            await callback.answer("No events match your filters.", show_alert=True)
+            await callback.answer("📭 No events match your filters for this period.", show_alert=True)
             return
             
         text = f"📰 <b>Events ({callback_data.action.capitalize()})</b> - Page 1/{total_pages}\n\n"
-        text += "\n".join([format_event_msg(e) for e in chunk])
+        text += "\n".join([format_event_msg(e, now) for e in chunk])
         
         await callback.message.edit_text(text, reply_markup=pagination_keyboard(0, total_pages, callback_data.action))
 
@@ -130,9 +163,9 @@ async def handle_pagination(callback: CallbackQuery, callback_data: PaginationCB
         await callback.message.delete()
         return
 
-    chunk, total_pages, _ = get_paginated_events(callback.from_user.id, callback_data.period, callback_data.page)
+    chunk, total_pages, _, now = get_paginated_events(callback.from_user.id, callback_data.period, callback_data.page)
     text = f"📰 <b>Events ({callback_data.period.capitalize()})</b> - Page {callback_data.page + 1}/{total_pages}\n\n"
-    text += "\n".join([format_event_msg(e) for e in chunk])
+    text += "\n".join([format_event_msg(e, now) for e in chunk])
     
     await callback.message.edit_text(text, reply_markup=pagination_keyboard(callback_data.page, total_pages, callback_data.period))
 
@@ -168,7 +201,7 @@ async def dispatch_personalized_alerts():
         
         if 29.5 <= time_diff <= 30.5:
             ALERTED_EVENTS.add(event["id"])
-            msg_text = f"⚠️ <b>ALGO ALERT: 30 MINS TO NEWS</b> ⚠️\n\n{format_event_msg(event)}"
+            msg_text = f"⚠️ <b>ALGO ALERT: 30 MINS TO NEWS</b> ⚠️\n\n{format_event_msg(event, now)}"
             
             for u in users:
                 if u["impact"].get(event["impact"], False) and u["currencies"].get(event["currency"], False) and u["event_types"].get(event["event_type"], False):
@@ -186,6 +219,10 @@ async def main():
     
     dp.include_router(admin_router)
     dp.include_router(router)
+    
+    # Start web server to pass Render port scanning
+    await start_web_server()
+
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
