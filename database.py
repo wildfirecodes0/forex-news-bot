@@ -16,7 +16,6 @@ DEFAULT_SETTINGS = {
 }
 
 def get_user_with_status(user_id: int) -> tuple[dict, bool]:
-    """Returns (user_data, is_new_user)"""
     response = supabase.table("users").select("*").eq("user_id", user_id).execute()
     if response.data:
         return response.data[0], False
