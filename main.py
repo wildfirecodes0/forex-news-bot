@@ -29,12 +29,10 @@ router = Router()
 EVENTS_CACHE =[]
 ALERTED_EVENTS = set()
 
-# --- RENDER WEB SERVER (PORT BINDING) ---
 async def health_check(request):
     return web.Response(text="Bot is running smoothly!", status=200)
 
 async def start_web_server():
-    """Runs a dummy webserver to pass Render.com port scan checks."""
     app = web.Application()
     app.router.add_get('/', health_check)
     runner = web.AppRunner(app)
@@ -44,7 +42,6 @@ async def start_web_server():
     await site.start()
     print(f"Health check server running on port {port}")
 
-# --- MIDDLEWARE ---
 class ForceJoinMiddleware(BaseMiddleware):
     async def __call__(self, handler, event: TelegramObject, data: dict):
         user = data.get("event_from_user")
@@ -59,14 +56,13 @@ class ForceJoinMiddleware(BaseMiddleware):
                     await event.message.answer(msg, reply_markup=force_join_keyboard())
                     await event.answer()
                 return 
-        except Exception as e:
+        except Exception:
             pass
         return await handler(event, data)
 
 dp.message.middleware(ForceJoinMiddleware())
 dp.callback_query.middleware(ForceJoinMiddleware())
 
-# --- HELPER FUNCTIONS ---
 def format_event_msg(event: dict, now: datetime) -> str:
     emojis = {"High": "🔴", "Medium": "🟠", "Low": "🟡", "None": "⚪"}
     emj = emojis.get(event["impact"], "⚪")
@@ -90,7 +86,6 @@ def get_paginated_events(user_id: int, period: str, page: int = 0):
         if not user["currencies"].get(e["currency"], False): continue
         if not user["event_types"].get(e["event_type"], False): continue
         
-        # Fixed Filter Logic: Match Calendar Day Exactly, allow viewing past events for today.
         event_date = e["time_ist"].date()
         if period == "today":
             if event_date != now.date(): continue
@@ -107,12 +102,10 @@ def get_paginated_events(user_id: int, period: str, page: int = 0):
     
     return chunk, total_pages, len(filtered), now
 
-# --- HANDLERS ---
 @router.message(CommandStart())
 async def cmd_start(message: Message):
     user, is_new = get_user_with_status(message.from_user.id)
     
-    # Notify Admin on new user
     if is_new and ADMIN_ID != 0:
         try:
             await bot.send_message(
@@ -142,9 +135,15 @@ async def check_subscription(callback: CallbackQuery):
 @router.callback_query(MainMenuCB.filter())
 async def handle_main_menu(callback: CallbackQuery, callback_data: MainMenuCB):
     if callback_data.action == "settings":
-        await callback.message.edit_text("🎛 <b>Filter Settings</b>\nToggle what news you want to receive:", reply_markup=settings_keyboard(callback.fromuser.id))
+        await callback.message.edit_text(
+            "🎛 <b>Filter Settings</b>\nToggle what news you want to receive:", 
+            reply_markup=settings_keyboard(callback.from_user.id)
+        )
     elif callback_data.action == "back_main":
-        await callback.message.edit_text("📊 <b>Algo Forex News Bot</b>\n👇 Select an option to manage your feed:", reply_markup=main_inline_menu())
+        await callback.message.edit_text(
+            "📊 <b>Algo Forex News Bot</b>\n👇 Select an option to manage your feed:", 
+            reply_markup=main_inline_menu()
+        )
     else:
         chunk, total_pages, total_items, now = get_paginated_events(callback.from_user.id, callback_data.action, 0)
         
@@ -176,7 +175,6 @@ async def toggle_setting(callback: CallbackQuery, callback_data: SettingsCB):
     update_user_filter(callback.from_user.id, callback_data.category, callback_data.item, current_val)
     await callback.message.edit_reply_markup(reply_markup=settings_keyboard(callback.from_user.id))
 
-# --- ADMIN SCRAPE OVERRIDE ---
 @admin_router.callback_query(F.data == "admin_scrape")
 async def force_scrape(callback: CallbackQuery):
     await callback.answer("Scraping in background...")
@@ -184,7 +182,6 @@ async def force_scrape(callback: CallbackQuery):
     EVENTS_CACHE = fetch_forex_events()
     await callback.message.answer(f"✅ Scraper refreshed. Buffer holds {len(EVENTS_CACHE)} events.")
 
-# --- BACKGROUND TASKS ---
 def update_events_cache():
     global EVENTS_CACHE
     EVENTS_CACHE = fetch_forex_events()
@@ -220,9 +217,7 @@ async def main():
     dp.include_router(admin_router)
     dp.include_router(router)
     
-    # Start web server to pass Render port scanning
     await start_web_server()
-
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
