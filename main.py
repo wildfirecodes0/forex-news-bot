@@ -48,7 +48,7 @@ class ForceJoinMiddleware(BaseMiddleware):
         if not user: return await handler(event, data)
         try:
             member = await bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=user.id)
-            if member.status in ['left', 'kicked', 'restricted']:
+            if member.status in['left', 'kicked', 'restricted']:
                 msg = "🛑 <b>Action Required!</b>\n\nYou must join our official channel to use Algo Forex News Bot."
                 if isinstance(event, Message):
                     await event.answer(msg, reply_markup=force_join_keyboard())
@@ -84,7 +84,6 @@ def get_paginated_events(user_id: int, period: str, page: int = 0):
     for e in EVENTS_CACHE:
         if not user["impact"].get(e["impact"], False): continue
         if not user["currencies"].get(e["currency"], False): continue
-        if not user["event_types"].get(e["event_type"], False): continue
         
         event_date = e["time_ist"].date()
         if period == "today":
@@ -201,7 +200,7 @@ async def dispatch_personalized_alerts():
             msg_text = f"⚠️ <b>ALGO ALERT: 30 MINS TO NEWS</b> ⚠️\n\n{format_event_msg(event, now)}"
             
             for u in users:
-                if u["impact"].get(event["impact"], False) and u["currencies"].get(event["currency"], False) and u["event_types"].get(event["event_type"], False):
+                if u["impact"].get(event["impact"], False) and u["currencies"].get(event["currency"], False):
                     try:
                         await bot.send_message(u["user_id"], msg_text)
                     except Exception:
