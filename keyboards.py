@@ -3,7 +3,7 @@ from aiogram.filters.callback_data import CallbackData
 from database import get_user
 import os
 
-CHANNEL_URL = os.getenv("CHANNEL_URL", "https://t.me/AlgoRaushan")
+CHANNEL_URL = os.getenv("CHANNEL_URL", "https://t.me/algoraushan")
 
 class MainMenuCB(CallbackData, prefix="menu"):
     action: str
@@ -46,12 +46,8 @@ def settings_keyboard(user_id: int):
         icon = "✅" if user["currencies"].get(curr, False) else "❌"
         builder.button(text=f"{icon} {curr}", callback_data=SettingsCB(category="currencies", item=curr))
         
-    for etype in user["event_types"].keys():
-        icon = "✅" if user["event_types"].get(etype, False) else "❌"
-        builder.button(text=f"{icon} {etype}", callback_data=SettingsCB(category="event_types", item=etype))
-        
     builder.button(text="🔙 Back to Menu", callback_data=MainMenuCB(action="back_main"))
-    builder.adjust(4, 3, 3, 3, 2, 2, 2, 2, 2, 1)
+    builder.adjust(4, 3, 3, 3, 1)
     return builder.as_markup()
 
 def pagination_keyboard(current_page: int, total_pages: int, period: str):
