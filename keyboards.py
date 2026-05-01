@@ -27,10 +27,9 @@ def force_join_keyboard():
 def main_inline_menu():
     builder = InlineKeyboardBuilder()
     builder.button(text="📅 Today", callback_data=MainMenuCB(action="today"))
-    builder.button(text="🗓 1 Week", callback_data=MainMenuCB(action="week"))
-    builder.button(text="📆 1 Month", callback_data=MainMenuCB(action="month"))
+    builder.button(text="🗓 This Week", callback_data=MainMenuCB(action="week"))
     builder.button(text="⚙️ Settings", callback_data=MainMenuCB(action="settings"))
-    builder.adjust(2, 1, 1)
+    builder.adjust(2, 1) # Clean 2-1 layout
     return builder.as_markup()
 
 def settings_keyboard(user_id: int):
@@ -52,13 +51,27 @@ def settings_keyboard(user_id: int):
 
 def pagination_keyboard(current_page: int, total_pages: int, period: str):
     builder = InlineKeyboardBuilder()
+    
+    # Navigation Row (Prev & Next)
+    nav_count = 0
     if current_page > 0:
         builder.button(text="⬅️ Prev", callback_data=PaginationCB(action="prev", page=current_page-1, period=period))
-    
-    builder.button(text="❌ Close", callback_data=PaginationCB(action="close", page=0, period=""))
+        nav_count += 1
     
     if current_page < total_pages - 1:
         builder.button(text="Next ➡️", callback_data=PaginationCB(action="next", page=current_page+1, period=period))
+        nav_count += 1
         
-    builder.adjust(3 if (current_page > 0 and current_page < total_pages - 1) else 2)
+    # Actions Row (Back & Close)
+    builder.button(text="🔙 Back", callback_data=MainMenuCB(action="back_main"))
+    builder.button(text="❌ Close", callback_data=PaginationCB(action="close", page=0, period=""))
+    
+    # Adjust alignment based on buttons available
+    if nav_count == 0:
+        builder.adjust(2) # Only Back and Close side-by-side
+    elif nav_count == 1:
+        builder.adjust(1, 2)
+    else:
+        builder.adjust(2, 2)
+        
     return builder.as_markup()
