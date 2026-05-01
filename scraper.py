@@ -7,19 +7,6 @@ import pytz
 def clean_title(title: str) -> str:
     return re.sub(r'(?i)\s*(q/q|y/y|m/m|q[1-4]|m[1-9]).*$', '', title).strip()
 
-def get_event_type(title: str) -> str:
-    t = title.lower()
-    if any(x in t for x in["gdp", "pmi", "production", "growth", "manufacturing", "services", "trade"]): return "Growth"
-    if any(x in t for x in["cpi", "ppi", "pce", "inflation", "price", "wage"]): return "Inflation"
-    if any(x in t for x in["employment", "unemployment", "jobless", "payrolls", "nfp", "jolt", "claims"]): return "Employment"
-    if any(x in t for x in["rate", "central bank", "fed", "ecb", "boe", "boj", "rba", "statement", "minutes"]): return "Central Bank"
-    if any(x in t for x in["bond", "auction", "note", "bill"]): return "Bonds"
-    if any(x in t for x in["housing", "home", "building", "mortgage"]): return "Housing"
-    if any(x in t for x in ["consumer", "sentiment", "confidence", "michigan"]): return "Consumer Surveys"
-    if any(x in t for x in["business", "tankan", "ifo", "zew"]): return "Business Surveys"
-    if any(x in t for x in["speaks", "speech", "testifies"]): return "Speeches"
-    return "Misc"
-
 def fetch_forex_events():
     urls =[
         "https://nfs.faireconomy.media/ff_calendar_thisweek.xml",
@@ -40,19 +27,21 @@ def fetch_forex_events():
             soup = BeautifulSoup(response.content, 'xml')
             
             for event in soup.find_all('event'):
-                title = event.title.text if event.title else "Unknown"
-                currency = event.country.text if event.country else "UNK"
-                date_str = event.date.text if event.date else ""
-                time_str = event.time.text if event.time else ""
-                impact_raw = event.impact.text if event.impact else "Non"
+                # .strip() prevents hidden space issues
+                title = event.title.text.strip() if event.title and event.title.text else "Unknown"
+                currency = event.country.text.strip().upper() if event.country and event.country.text else "UNK"
+                date_str = event.date.text.strip() if event.date and event.date.text else ""
+                time_str = event.time.text.strip().upper() if event.time and event.time.text else ""
+                impact_raw = event.impact.text.strip() if event.impact and event.impact.text else "Non"
                 
-                if time_str in["All Day", "Tentative", ""]: continue
+                if time_str in["ALL DAY", "TENTATIVE", ""]: continue
                 
                 impact = impact_map.get(impact_raw, "None")
                 dt_str = f"{date_str} {time_str}"
                 
                 try:
-                    dt_est = eastern.localize(datetime.strptime(dt_str, "%m-%d-%Y %I:%Mam"))
+                    # ✅ FIXED: Now properly handles both AM and PM times!
+                    dt_est = eastern.localize(datetime.strptime(dt_str, "%m-%d-%Y %I:%M%p"))
                     dt_ist = dt_est.astimezone(ist)
                 except ValueError:
                     continue
@@ -63,7 +52,6 @@ def fetch_forex_events():
                     "title": clean_name,
                     "currency": currency,
                     "impact": impact,
-                    "event_type": get_event_type(clean_name),
                     "time_ist": dt_ist
                 })
         except Exception as e:
