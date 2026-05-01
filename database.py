@@ -11,8 +11,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 DEFAULT_SETTINGS = {
     "impact": {"High": True, "Medium": True, "Low": False, "None": False},
-    "currencies": {"USD": True, "EUR": True, "GBP": True, "JPY": False, "AUD": False, "CAD": False, "CHF": False, "NZD": False, "CNY": False},
-    "event_types": {"Growth": True, "Inflation": True, "Employment": True, "Central Bank": True, "Bonds": False, "Housing": False, "Consumer Surveys": False, "Business Surveys": False, "Speeches": True, "Misc": True}
+    "currencies": {"USD": True, "EUR": True, "GBP": True, "JPY": False, "AUD": False, "CAD": False, "CHF": False, "NZD": False, "CNY": False}
 }
 
 def get_user_with_status(user_id: int) -> tuple[dict, bool]:
