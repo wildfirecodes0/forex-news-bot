@@ -48,7 +48,7 @@ class ForceJoinMiddleware(BaseMiddleware):
         if not user: return await handler(event, data)
         try:
             member = await bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=user.id)
-            if member.status in['left', 'kicked', 'restricted']:
+            if member.status in ['left', 'kicked', 'restricted']:
                 msg = "🛑 <b>Action Required!</b>\n\nYou must join our official channel to use Algo Forex News Bot."
                 if isinstance(event, Message):
                     await event.answer(msg, reply_markup=force_join_keyboard())
@@ -89,9 +89,8 @@ def get_paginated_events(user_id: int, period: str, page: int = 0):
         if period == "today":
             if event_date != now.date(): continue
         elif period == "week":
+            # Show events from today up to 7 days ahead
             if event_date < now.date() or event_date > (now.date() + timedelta(days=7)): continue
-        elif period == "month":
-            if event_date < now.date() or event_date > (now.date() + timedelta(days=30)): continue
 
         filtered.append(e)
 
@@ -150,7 +149,8 @@ async def handle_main_menu(callback: CallbackQuery, callback_data: MainMenuCB):
             await callback.answer("📭 No events match your filters for this period.", show_alert=True)
             return
             
-        text = f"📰 <b>Events ({callback_data.action.capitalize()})</b> - Page 1/{total_pages}\n\n"
+        period_title = "Today" if callback_data.action == "today" else "This Week"
+        text = f"📰 <b>Events ({period_title})</b> - Page 1/{total_pages}\n\n"
         text += "\n".join([format_event_msg(e, now) for e in chunk])
         
         await callback.message.edit_text(text, reply_markup=pagination_keyboard(0, total_pages, callback_data.action))
@@ -162,7 +162,9 @@ async def handle_pagination(callback: CallbackQuery, callback_data: PaginationCB
         return
 
     chunk, total_pages, _, now = get_paginated_events(callback.from_user.id, callback_data.period, callback_data.page)
-    text = f"📰 <b>Events ({callback_data.period.capitalize()})</b> - Page {callback_data.page + 1}/{total_pages}\n\n"
+    
+    period_title = "Today" if callback_data.period == "today" else "This Week"
+    text = f"📰 <b>Events ({period_title})</b> - Page {callback_data.page + 1}/{total_pages}\n\n"
     text += "\n".join([format_event_msg(e, now) for e in chunk])
     
     await callback.message.edit_text(text, reply_markup=pagination_keyboard(callback_data.page, total_pages, callback_data.period))
